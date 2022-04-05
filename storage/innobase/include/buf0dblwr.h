@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1995, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, 2021, MariaDB Corporation.
+Copyright (c) 2017, 2022, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -176,7 +176,13 @@ public:
     mysql_mutex_unlock(&mutex);
   }
 
-  TPOOL_SUPPRESS_TSAN size_t pending_writes() const { return writes_pending; }
+  size_t pending_writes()
+  {
+    mysql_mutex_lock(&mutex);
+    const size_t pending{writes_pending};
+    mysql_mutex_unlock(&mutex);
+    return pending;
+  }
 
   /** Wait for writes_pending to reach 0 */
   void wait_for_page_writes()

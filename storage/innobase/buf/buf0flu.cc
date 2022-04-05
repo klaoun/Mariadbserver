@@ -2414,11 +2414,7 @@ ATTRIBUTE_COLD void buf_flush_buffer_pool()
   {
     mysql_mutex_unlock(&buf_pool.flush_list_mutex);
     buf_flush_list(srv_max_io_capacity);
-    buf_dblwr.lock();
-    const size_t pending= buf_dblwr.pending_writes();
-    buf_dblwr.unlock();
-
-    if (pending)
+    if (const size_t pending= buf_dblwr.pending_writes())
     {
       timespec abstime;
       service_manager_extend_timeout(INNODB_EXTEND_TIMEOUT_INTERVAL,

@@ -1842,10 +1842,8 @@ public:
     if (n_pend_reads)
       return true;
     mysql_mutex_lock(&mutex);
-    buf_dblwr.lock();
     const bool any_pending= n_flush_LRU_ || flush_list_active ||
       buf_dblwr.pending_writes();
-    buf_dblwr.unlock();
     mysql_mutex_unlock(&mutex);
     return any_pending;
   }
