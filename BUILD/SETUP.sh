@@ -127,7 +127,7 @@ get_make_parallel_flag
 # implementation of SSL. --with-ssl=yes will first try system library
 # then the bundled one  --with-ssl=system will use the system library.
 # We use bundled by default as this is guaranteed to work with Galera
-SSL_LIBRARY=--with-ssl=bundled
+SSL_LIBRARY=--with-ssl=system
 
 if [ "x$warning_mode" = "xpedantic" ]; then
   warnings="-W -Wall -ansi -pedantic -Wno-long-long -Wno-unused -D_POSIX_SOURCE"
