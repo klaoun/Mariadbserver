@@ -1,0 +1,24 @@
+###################################################################################
+# Please, check include/rpl_stop_middle_group.test.
+###################################################################################
+-- source include/have_debug.inc
+-- source include/have_innodb.inc
+-- source include/have_binlog_format_statement.inc
+-- source include/master-slave.inc
+
+SET @@session.binlog_direct_non_transactional_updates= FALSE;
+
+--connection slave
+--source include/stop_slave.inc
+--let $old_par_threads=`SELECT @@GLOBAL.slave_parallel_threads`
+set @@GLOBAL.slave_parallel_threads=1;
+--source include/start_slave.inc
+
+--connection master
+-- source include/rpl_stop_middle_group.test
+
+--connection slave
+--source include/stop_slave.inc
+--eval set @@GLOBAL.slave_parallel_threads=$old_par_threads
+--source include/start_slave.inc
+--source include/rpl_end.inc
