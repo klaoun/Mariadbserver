@@ -1339,6 +1339,19 @@ static bool io_slave_killed(Master_info* mi)
   DBUG_RETURN(mi->abort_slave || mi->io_thd->killed);
 }
 
+int slave_output_incomplete_trx_non_trans_err(THD *thd, rpl_group_info *rgi)
+{
+  int errcode= ER_SLAVE_FATAL_ERROR;
+  rgi->rli->report(
+      ERROR_LEVEL, errcode, rgi->gtid_info(), ER_THD(thd, errcode),
+      "... Slave SQL Thread stopped with incomplete event group having "
+      "non-transactional changes. If the group consists solely of row-based "
+      "events, you can try to restart the slave with "
+      "--slave-exec-mode=IDEMPOTENT, which ignores duplicate key, key not "
+      "found, and similar errors (see documentation for details).");
+  return errcode;
+}
+
 /**
    The function analyzes a possible killed status and makes
    a decision whether to accept it or not.
@@ -1383,14 +1396,6 @@ static bool sql_slave_killed(rpl_group_info *rgi)
          (thd->variables.option_bits & OPTION_KEEP_LOG)) &&
         rli->is_in_group())
     {
-      char msg_stopped[]=
-        "... Slave SQL Thread stopped with incomplete event group "
-        "having non-transactional changes. "
-        "If the group consists solely of row-based events, you can try "
-        "to restart the slave with --slave-exec-mode=IDEMPOTENT, which "
-        "ignores duplicate key, key not found, and similar errors (see "
-        "documentation for details).";
-
       DBUG_PRINT("info", ("modified_non_trans_table: %d  OPTION_BEGIN: %d  "
                           "OPTION_KEEP_LOG: %d  is_in_group: %d",
                           thd->transaction.all.modified_non_trans_table,
@@ -1434,16 +1439,13 @@ static bool sql_slave_killed(rpl_group_info *rgi)
         }
         else
         {
-          rli->report(ERROR_LEVEL, ER_SLAVE_FATAL_ERROR, rgi->gtid_info(),
-                      ER_THD(thd, ER_SLAVE_FATAL_ERROR), msg_stopped);
+          slave_output_incomplete_trx_non_trans_err(thd, rgi);
         }
       }
       else
       {
         ret= TRUE;
-        rli->report(ERROR_LEVEL, ER_SLAVE_FATAL_ERROR, rgi->gtid_info(),
-                    ER_THD(thd, ER_SLAVE_FATAL_ERROR),
-                    msg_stopped);
+        slave_output_incomplete_trx_non_trans_err(thd, rgi);
       }
     }
     else
@@ -4205,7 +4207,34 @@ static int exec_relay_log_event(THD* thd, Relay_log_info* rli,
                           (LOG_EVENT_IS_QUERY(typ) &&
                            strcmp("COMMIT", ((Query_log_event *) ev)->query) == 0))
                       {
-                        DBUG_ASSERT(thd->transaction.all.modified_non_trans_table);
+                        if (!rli->mi->using_parallel())
+                        {
+                          /*
+                            In the serial case, the SQL thread must have
+                            already executed the non-transactional table
+                          */
+                          DBUG_ASSERT(
+                              thd->transaction.all.modified_non_trans_table);
+                        }
+                        else
+                        {
+                          /*
+                            In the parallel case, we wait until a worker thread
+                            executes the non-transactional statement to set up
+                            the context for our kill
+                          */
+                          int tries=5;
+                          while (--tries &&
+                                 (!rli->parallel.current ||
+                                  !rli->parallel.current->current_group_info ||
+                                  !rli->parallel.current->current_group_info
+                                       ->thd->transaction.all
+                                       .modified_non_trans_table))
+                          {
+                            sleep(1);
+                          }
+                          DBUG_ASSERT(tries);
+                        }
                         rli->abort_slave= 1;
                         mysql_mutex_unlock(&rli->data_lock);
                         delete ev;

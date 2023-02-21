@@ -275,17 +275,24 @@ finish_event_group(rpl_parallel_thread *rpt, uint64 sub_id,
   wfc->wakeup_subsequent_commits(rgi->worker_error);
 }
 
-
-static void
-signal_error_to_sql_driver_thread(THD *thd, rpl_group_info *rgi, int err)
+static void signal_error_to_sql_driver_thread(THD *thd, rpl_group_info *rgi,
+                                              int err)
 {
   rgi->worker_error= err;
+  if (thd->transaction.all.modified_non_trans_table &&
+      (rgi->parallel_entry->force_abort || rgi->rli->abort_slave))
+  {
+    slave_output_incomplete_trx_non_trans_err(thd, rgi);
+  }
+  else
+  {
+    rgi->unmark_start_commit();
+    rgi->cleanup_context(thd, true);
+  }
   /*
     In case we get an error during commit, inform following transactions that
     we aborted our commit.
   */
-  rgi->unmark_start_commit();
-  rgi->cleanup_context(thd, true);
   rgi->rli->abort_slave= true;
   rgi->rli->stop_for_until= false;
   mysql_mutex_lock(rgi->rli->relay_log.get_log_lock());
@@ -1399,6 +1406,35 @@ handle_rpl_parallel_thread(void *arg)
         }
         thd->reset_killed();
       }
+
+      /*
+        STOP SLAVE has been issued, there are three potential behaviors for a
+        worker thread to stop:
+          1) The slave should wait for a transaction to complete only if it has
+             modified non-transactional tables and it is the very next commit
+             to apply.
+          2) The worker thread should stop and rollback a transaction if it can
+             safely be rolled back, i.e if it has not modified any
+             non-transactional tables
+          3) The worker thread should stop a transaction and keep its state if
+             cannot be safely rolled back, i.e. if it has modified any
+             non-transactional tables.
+      */
+      if (rgi->parallel_entry->force_abort || rgi->rli->abort_slave)
+      {
+        if (!rgi->thd->transaction.all.modified_non_trans_table ||
+            rgi->gtid_sub_id > rgi->parallel_entry->last_committed_sub_id + 1)
+        {
+          /*
+            For transactions which only modify transactional tables, we want
+            to terminate immediately and roll-back.
+          */
+          signal_error_to_sql_driver_thread(thd, rgi, err);
+        }
+        /* else, we want to wait for the transaction to complete as normal */
+
+      }
+
       if (end_of_group)
       {
         in_event_group= false;
@@ -1432,7 +1468,8 @@ handle_rpl_parallel_thread(void *arg)
 
     rpt->inuse_relaylog_refcount_update();
 
-    if (in_event_group && group_rgi->parallel_entry->force_abort)
+    if (in_event_group && (group_rgi->parallel_entry->force_abort ||
+                           group_rgi->rli->abort_slave))
     {
       /*
         We are asked to abort, without getting the remaining events in the
