@@ -78,6 +78,8 @@ worker_list_t;
   over the problem). Thus, we employ a workarond, for Linux only.
 */
 #include <atomic>
+#include "my_apc.h"
+
 #define HAVE_DISABLE_QUEUEING
 #endif
 
@@ -107,8 +109,12 @@ struct TP_connection_generic :public TP_connection
   int waiting;
   bool fix_group;
 #ifdef HAVE_DISABLE_QUEUEING
+  Notifiable_work_zone work_zone;
   std::atomic<bool> disable_queue{false};
 #endif
+  bool leave_work_zone() final;
+  bool try_enter_work_zone_owned() override
+  { return work_zone.try_enter_owner(); }
 #ifdef _WIN32
   win_aiosocket win_sock{};
   void init_vio(st_vio *vio) override

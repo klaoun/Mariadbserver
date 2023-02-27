@@ -210,6 +210,7 @@ retry:
           thd->async_state.m_state = thd_async_state::enum_async_state::RESUMED;
           goto retry;
         }
+        c->leave_work_zone();
         return true;
       case DISPATCH_COMMAND_CLOSE_CONNECTION:
         /*
@@ -218,7 +219,12 @@ retry:
           We can skip epoch increase here: process_apc_requests will be called
           one last time after thd is unlinked.
         */
-        return false;
+      {
+        bool owned= c->leave_work_zone();
+        if (owned)
+          return !c->try_enter_work_zone_owned();
+        return true; // let the owner free the resources
+      }
       case DISPATCH_COMMAND_SUCCESS:
         break;
     }
@@ -398,8 +404,7 @@ static dispatch_command_return threadpool_process_request(THD *thd, bool apc_onl
 
   if (unlikely(apc_only))
   {
-    if (!thd_net_process_apc_requests(thd))
-      DBUG_ASSERT(false); // expect some APC here
+    thd_net_process_apc_requests(thd);
     goto after_do_command;
   }
 
@@ -484,7 +489,7 @@ static void tp_add_connection(CONNECT *connect)
   TP_connection *c= pool->new_connection(connect);
   DBUG_EXECUTE_IF("simulate_failed_connection_1", delete c ; c= 0;);
   if (c)
-    pool->add(c);
+    pool->add(c, true);
   else
     connect->close_and_delete();
 }

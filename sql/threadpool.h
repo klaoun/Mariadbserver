@@ -122,6 +122,8 @@ struct TP_connection
             -1. if error
    */
   virtual int cancel_io() = 0;
+  virtual bool leave_work_zone(){ return true; }
+  virtual bool try_enter_work_zone_owned(){ return true; }
 
   virtual void wait_begin(int type)= 0;
   virtual void wait_end() = 0;
@@ -134,7 +136,7 @@ struct TP_pool
   virtual ~TP_pool(){};
   virtual int init()= 0;
   virtual TP_connection *new_connection(CONNECT *)= 0;
-  virtual void add(TP_connection *c)= 0;
+  virtual void add(TP_connection *c, bool owner) = 0;
   virtual int set_max_threads(uint){ return 0; }
   virtual int set_min_threads(uint){ return 0; }
   virtual int set_pool_size(uint){ return 0; }
@@ -155,7 +157,8 @@ struct TP_pool_win:TP_pool
   virtual int init();
   virtual ~TP_pool_win();
   virtual TP_connection *new_connection(CONNECT *c);
-  virtual void add(TP_connection *);
+  void add(TP_connection *);
+  virtual void add(TP_connection * c, bool){ add(c) };
   virtual int set_max_threads(uint);
   virtual int set_min_threads(uint);
   void resume(TP_connection *c);
@@ -169,7 +172,7 @@ struct TP_pool_generic :TP_pool
   ~TP_pool_generic();
   virtual int init();
   virtual TP_connection *new_connection(CONNECT *c);
-  virtual void add(TP_connection *);
+  virtual void add(TP_connection *, bool);
   virtual int set_pool_size(uint);
   virtual int set_stall_limit(uint);
   virtual int get_idle_thread_count();

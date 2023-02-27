@@ -114,7 +114,9 @@ struct pool_timer_t
 
 static pool_timer_t pool_timer;
 
-static void queue_put(thread_group_t *thread_group, TP_connection_generic *connection);
+static void queue_put(thread_group_t *thread_group,
+                      TP_connection_generic *connection,
+                      bool owner);
 static void queue_put(thread_group_t *thread_group, native_event *ev, int cnt);
 static int  wake_thread(thread_group_t *thread_group,bool due_to_stall);
 static int  wake_or_create_thread(thread_group_t *thread_group, bool due_to_stall=false);
@@ -502,7 +504,7 @@ static void queue_put(thread_group_t *thread_group, native_event *ev, int cnt)
   {
     TP_connection_generic *c = (TP_connection_generic *)native_event_get_userdata(&ev[i]);
 #ifdef HAVE_DISABLE_QUEUEING
-    if (c->disable_queue.exchange(true))
+    if (!c->work_zone.try_enter_owner())
       continue; /* connection already enqueued or being executed */
 #endif
     c->enqueue_time= now;
@@ -1124,12 +1126,16 @@ static void thread_group_close(thread_group_t *thread_group)
 
 */
 
-static void queue_put(thread_group_t *thread_group, TP_connection_generic *connection)
+static void queue_put(thread_group_t *thread_group,
+                      TP_connection_generic *connection,
+                      bool owner)
 {
   DBUG_ENTER("queue_put");
 
 #ifdef HAVE_DISABLE_QUEUEING
-  if (connection->disable_queue.exchange(true))
+  auto &wz = connection->work_zone;
+  bool entered = owner ? wz.try_enter_owner() : wz.try_enter();
+  if (!entered)
     DBUG_VOID_RETURN;
 #endif
 
@@ -1332,7 +1338,7 @@ TP_connection * TP_pool_generic::new_connection(CONNECT *c)
   Add a new connection to thread pool
 */
 
-void TP_pool_generic::add(TP_connection *c)
+void TP_pool_generic::add(TP_connection *c, bool owner)
 {
   DBUG_ENTER("tp_add_connection");
 
@@ -1343,37 +1349,29 @@ void TP_pool_generic::add(TP_connection *c)
     will be done by a worker thread.
   */
   mysql_mutex_lock(&thread_group->mutex);
-  queue_put(thread_group, connection);
+  queue_put(thread_group, connection, owner);
   mysql_mutex_unlock(&thread_group->mutex);
   DBUG_VOID_RETURN;
 }
 
 void TP_pool_generic::resume(TP_connection* c)
 {
-  add(c);
+  add(c, true);
 }
 
 int TP_pool_generic::wake(TP_connection *c)
 {
-#ifdef HAVE_DISABLE_QUEUEING
-  c->state= TP_STATE_INTERRUPTED;
-  add(c);
-  return 0;
-#elif defined(_WIN32)
   TP_connection_generic *connection= (TP_connection_generic *) c;
+#if defined(_WIN32)
   if (CancelIoEx(connection->win_sock.m_handle, &connection->win_sock.m_overlapped))
     return 0;
   DBUG_ASSERT(GetLastError() == ERROR_NOT_FOUND);
   return 1;
 #else
-  int status= c->cancel_io();
-  if (status == 0)
-  {
-    c->state= TP_STATE_INTERRUPTED;
-    /* Add c to "ready" task queue */
-    add(c);
-  }
-  return status;
+  c->state= TP_STATE_INTERRUPTED;
+  if (!connection->work_zone.notify())
+    add(c, false);
+  return 0;
 #endif
 }
 
@@ -1525,6 +1523,18 @@ static int change_group(TP_connection_generic *c,
 }
 
 
+bool TP_connection_generic::leave_work_zone()
+{
+  auto leave_state= work_zone.try_leave();
+  while (unlikely(leave_state == Notifiable_work_zone::SIGNAL))
+  {
+    if (thd->apc_target.have_apc_requests())
+      thd->apc_target.process_apc_requests();
+    leave_state= work_zone.try_leave();
+  }
+  return leave_state == Notifiable_work_zone::OWNER;
+}
+
 int TP_connection_generic::start_io()
 {
   /*
@@ -1548,32 +1558,39 @@ int TP_connection_generic::start_io()
         return -1;
     }
   }
-#ifdef HAVE_DISABLE_QUEUEING
-  DBUG_ASSERT(disable_queue);
-  disable_queue= 0;
-#endif
+
+  bool owner= leave_work_zone();
 
   /*
     Bind to poll descriptor if not yet done.
   */
-  int ret;
-  if (unlikely(!bound_to_poll_descriptor))
+  int ret= 0;
+  if (likely(owner))
   {
-    bound_to_poll_descriptor= true;
-    ret= io_poll_associate_fd(thread_group->pollfd, fd, this, OPTIONAL_IO_POLL_READ_PARAM);
+    if (unlikely(!bound_to_poll_descriptor))
+    {
+      bound_to_poll_descriptor= true;
+      ret= io_poll_associate_fd(thread_group->pollfd, fd, this,
+                                OPTIONAL_IO_POLL_READ_PARAM);
+    }
+    else
+    {
+      ret= io_poll_start_read(thread_group->pollfd, fd, this,
+                              OPTIONAL_IO_POLL_READ_PARAM);
+    }
+
+    if (ret)
+    {
+      /*
+        We've got an error adding connection back to pool.
+        Therefore, ownership transition is also failed.
+        Try to enter the zone as owner again. If another
+        instance is active, pass the ownership there.
+       */
+      if (!work_zone.try_enter_owner())
+        ret= 0;
+    }
   }
-  else
-  {
-    ret= io_poll_start_read(thread_group->pollfd, fd, this,
-                            OPTIONAL_IO_POLL_READ_PARAM);
-  }
-#ifdef HAVE_DISABLE_QUEUEING
-  if (ret)
-  {
-    if (disable_queue.exchange(true))
-      ret= 0; /* someone other callback active, let it kill the connection*/
-  }
-#endif
   return ret;
 }
 

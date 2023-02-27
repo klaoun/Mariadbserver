@@ -175,5 +175,73 @@ void init_show_explain_psi_keys(void);
 #define init_show_explain_psi_keys() /* no-op */
 #endif
 
+
+class Notifiable_work_zone
+{
+  static constexpr ulong ENTER_BIT = 4;
+  static constexpr ulong OWNER_BIT = 2;
+  static constexpr ulong SIGNAL_BIT = 1;
+  std::atomic<ulong> state{0};
+public:
+
+  bool try_enter_owner()
+  {
+    const ulong ENTER_OWNER= ENTER_BIT|OWNER_BIT;
+    ulong old_state= state.fetch_or(ENTER_OWNER);
+    // We can't have an active owner in parallel.
+    DBUG_ASSERT((old_state & ENTER_OWNER) != (ENTER_OWNER));
+    return !(old_state & ENTER_BIT);
+  }
+
+  bool try_enter()
+  {
+    // assert mutex owner (lock_thd_kill)
+    ulong old_state= state.fetch_or(ENTER_BIT);
+    return !(old_state & ENTER_BIT);
+  }
+  bool has_event()
+  {
+    return state.load() & SIGNAL_BIT;
+  }
+
+  enum Leave_result
+  {
+    SIGNAL= 0,
+    NOT_OWNER= 1,
+    OWNER= 2,
+  };
+  static_assert(OWNER == OWNER_BIT, "OWNER_BIT changed?");
+
+  Leave_result try_leave()
+  {
+    ulong old_state= state.load();
+    DBUG_ASSERT(old_state & ENTER_BIT);
+
+    if (unlikely(old_state & SIGNAL_BIT))
+    {
+      state.fetch_and(~SIGNAL_BIT);
+      return SIGNAL; // one can reveal ownership only after leave
+    }
+
+    bool success= state.compare_exchange_weak(old_state, 0);
+    return success
+           // Transforms: OWNER_BIT == 2  ->  2 == SUCCESS_OWNER
+           //                          0  ->  1 == SUCCESS_NOT_OWNER
+           ? Leave_result(((old_state & OWNER_BIT) >> 1) + 1)
+           : SIGNAL;
+
+  }
+  void discard()
+  {
+    ulong old_state= state.fetch_and(~SIGNAL_BIT);
+    DBUG_ASSERT(old_state & ENTER_BIT);
+  }
+  bool notify()
+  {
+    ulong old_state= state.fetch_or(SIGNAL_BIT);
+    return old_state & ENTER_BIT; // true if there was someone to notify
+  }
+};
+
 #endif //SQL_MY_APC_INCLUDED
 
