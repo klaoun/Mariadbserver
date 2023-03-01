@@ -21805,6 +21805,8 @@ bool create_internal_tmp_table(TABLE *table, KEY *org_keyinfo,
   TABLE_SHARE *share= table->s;
   DBUG_ENTER("create_internal_tmp_table");
 
+  /* Current code can only handle 1 key */
+  DBUG_ASSERT(share->keys <= 1);
   if (share->keys)
   {						// Get keys for ni_create
     bool using_unique_constraint=0;

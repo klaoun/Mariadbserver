@@ -43,6 +43,13 @@
 
 C_MODE_START
 
+#ifdef _WIN32
+/*
+  We cannot use MMAP on Windows with Aria as it can cause file size to change
+  in _ma_dynmap_file(), which in turn causes files to be regarded as corrupted.
+*/
+#undef HAVE_MMAP
+#endif
 /*
   Limit max keys according to HA_MAX_POSSIBLE_KEY; See myisamchk.h for details
 */

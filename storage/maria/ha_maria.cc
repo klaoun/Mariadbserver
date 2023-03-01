@@ -2862,8 +2862,9 @@ bool ha_maria::auto_repair(int error) const
 int ha_maria::delete_all_rows()
 {
   THD *thd= table->in_use;
-  TRN *trn= file->trn;
+  TRN *trn= file->s->now_transactional ? file->trn : (TRN*) 0;
   CHECK_UNTIL_WE_FULLY_IMPLEMENTED_VERSIONING("TRUNCATE in WRITE CONCURRENT");
+
 #ifdef EXTRA_DEBUG
   if (trn && ! (trnman_get_flags(trn) & TRN_STATE_INFO_LOGGED))
   {
@@ -2877,8 +2878,7 @@ int ha_maria::delete_all_rows()
     If we are under LOCK TABLES, we have to do a commit as
     delete_all_rows() can't be rolled back
   */
-  if (table->in_use->locked_tables_mode && trn &&
-      trnman_has_locked_tables(trn))
+  if (trn && table->in_use->locked_tables_mode && trnman_has_locked_tables(trn))
   {
     int error;
     if ((error= implicit_commit(thd, 1)))
