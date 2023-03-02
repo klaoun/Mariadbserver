@@ -3346,7 +3346,7 @@ SELECT JSON_SCHEMA_VALID(@invalid_schema, '{"number1":3, "obj2":{"key1":3}}');
 JSON_SCHEMA_VALID(@invalid_schema, '{"number1":3, "obj2":{"key1":3}}')
 1
 Warnings:
-Warning	4038	Syntax error in JSON text in argument 2 to function 'json_schema_valid' at position 45
+Warning	4038	Syntax error in JSON text in argument 1 to function 'json_schema_valid' at position 45
 SET @invalid_json= '{"type":"array",
                      "maxItems": 4,
                      "minItems": 2,
@@ -3487,4 +3487,22 @@ SELECT * FROM obj_table;
 val_obj
 {"number1":4, "string1":"abcd", "object1":{"key1":"val1", "key2":[1,2,3, "string1"], "key3":4}}
 DROP TABLE str_table, num_table, true_table, false_table, null_table, arr_table, obj_table;
+#
+# MDEV-30690: Server crashed on function JSON_SCHEMA_VALID with incorrect input json schema
+#
+SET @schema = '{""}';
+SELECT JSON_SCHEMA_VALID(@schema, '1');
+JSON_SCHEMA_VALID(@schema, '1')
+0
+Warnings:
+Warning	4037	Unexpected end of JSON text in argument 1 to function 'json_schema_valid'
+SET @schema = '{
+  "type": "string",
+  "format"
+  }';
+SELECT JSON_SCHEMA_VALID(@schema, '1');
+JSON_SCHEMA_VALID(@schema, '1')
+0
+Warnings:
+Warning	4037	Unexpected end of JSON text in argument 1 to function 'json_schema_valid'
 # End of 10.12 test

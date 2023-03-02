@@ -2505,4 +2505,17 @@ SELECT * FROM obj_table;
 
 DROP TABLE str_table, num_table, true_table, false_table, null_table, arr_table, obj_table;
 
+--echo #
+--echo # MDEV-30690: Server crashed on function JSON_SCHEMA_VALID with incorrect input json schema
+--echo #
+
+SET @schema = '{""}';
+SELECT JSON_SCHEMA_VALID(@schema, '1');
+
+SET @schema = '{
+  "type": "string",
+  "format"
+  }';
+SELECT JSON_SCHEMA_VALID(@schema, '1');
+
 --echo # End of 10.12 test

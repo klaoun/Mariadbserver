@@ -4799,11 +4799,9 @@ bool Item_func_json_schema_valid::fix_length_and_dec(THD *thd)
   if (!create_object_and_handle_keyword(thd, &je, &keyword_list,
                                           &all_keywords))
     schema_validated= true;
-  else
-    res= true;
 
   if (je.s.error)
-    report_json_error(js, &je, 1);
+    report_json_error(js, &je, 0);
 
   return res || Item_bool_func::fix_length_and_dec(thd);
 }
