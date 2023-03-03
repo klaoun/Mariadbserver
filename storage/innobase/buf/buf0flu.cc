@@ -47,14 +47,11 @@ Created 11/11/1995 Heikki Tuuri
 #endif
 
 /** Number of pages flushed via LRU. Protected by buf_pool.mutex.
-Also included in buf_flush_page_count. */
+Also included in buf_pool.stat.n_pages_written. */
 ulint buf_lru_flush_page_count;
 
 /** Number of pages freed without flushing. Protected by buf_pool.mutex. */
 ulint buf_lru_freed_page_count;
-
-/** Number of pages flushed. Protected by buf_pool.mutex. */
-ulint buf_flush_page_count;
 
 /** Flag indicating if the page_cleaner is in active state. */
 Atomic_relaxed<bool> buf_page_cleaner_is_active;
@@ -759,7 +756,8 @@ inline void buf_pool_t::release_freed_page(buf_page_t *bpage)
 @param evict       whether to evict the page on write completion
 @param space       tablespace
 @return whether the page was flushed and buf_pool.mutex was released */
-inline bool buf_page_t::flush(bool evict, fil_space_t *space)
+inline
+buf_page_t::flush_status buf_page_t::flush(bool evict, fil_space_t *space)
 {
   ut_ad(in_file());
   ut_ad(in_LRU_list);
@@ -769,7 +767,7 @@ inline bool buf_page_t::flush(bool evict, fil_space_t *space)
   ut_ad(evict || space != fil_system.temp_space);
 
   if (!lock.u_lock_try(true))
-    return false;
+    return FLUSH_SKIPPED;
 
   const auto s= state();
   ut_a(s >= FREED);
@@ -777,14 +775,13 @@ inline bool buf_page_t::flush(bool evict, fil_space_t *space)
   if (s < UNFIXED)
   {
     buf_pool.release_freed_page(this);
-    mysql_mutex_unlock(&buf_pool.mutex);
-    return true;
+    return FLUSH_FREED;
   }
 
   if (s >= READ_FIX || oldest_modification() < 2)
   {
     lock.u_unlock(true);
-    return false;
+    return FLUSH_SKIPPED;
   }
 
   mysql_mutex_assert_not_owner(&buf_pool.flush_list_mutex);
@@ -807,7 +804,6 @@ inline bool buf_page_t::flush(bool evict, fil_space_t *space)
     ut_ad(buf_pool.n_flush_LRU_ < ULINT_UNDEFINED);
     buf_pool.n_flush_LRU_++;
   }
-  buf_flush_page_count++;
 
   mysql_mutex_unlock(&buf_pool.mutex);
 
@@ -896,7 +892,7 @@ inline bool buf_page_t::flush(bool evict, fil_space_t *space)
 
   /* Increment the I/O operation count used for selecting LRU policy. */
   buf_LRU_stat_inc_io();
-  return true;
+  return FLUSH_WRITTEN;
 }
 
 /** Check whether a page can be flushed from the buf_pool.
@@ -1093,7 +1089,7 @@ static ulint buf_flush_try_neighbors(fil_space_t *space,
       {
         if (!buf_pool.watch_is_sentinel(*bpage) &&
             bpage->oldest_modification() > 1 && bpage->ready_for_flush() &&
-            bpage->flush(evict, space))
+            bpage->flush(evict, space) == buf_page_t::FLUSH_WRITTEN)
         {
           ++count;
           continue;
@@ -1290,7 +1286,7 @@ reacquire_mutex:
       }
       else if (n->flushed >= max && !recv_recovery_is_on())
         break;
-      else if (bpage->flush(do_evict, space))
+      else if (bpage->flush(do_evict, space) == buf_page_t::FLUSH_WRITTEN)
       {
         ++n->flushed;
         goto reacquire_mutex;
@@ -1442,7 +1438,7 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
     reacquire_mutex:
       mysql_mutex_lock(&buf_pool.mutex);
     }
-    else if (bpage->flush(false, space))
+    else if (bpage->flush(false, space) == buf_page_t::FLUSH_WRITTEN)
     {
       ++count;
       goto reacquire_mutex;
@@ -1598,21 +1594,24 @@ bool buf_flush_list_space(fil_space_t *space, ulint *n_flushed)
           acquired= false;
           goto was_freed;
         }
-        if (!bpage->flush(false, space))
-        {
+        switch (bpage->flush(false, space)) {
+        case buf_page_t::FLUSH_SKIPPED:
           may_have_skipped= true;
           mysql_mutex_lock(&buf_pool.flush_list_mutex);
           goto next_after_skip;
-        }
-        ++n_flush;
-        if (!--max_n_flush)
-        {
-          mysql_mutex_lock(&buf_pool.mutex);
-          mysql_mutex_lock(&buf_pool.flush_list_mutex);
-          may_have_skipped= true;
+        case buf_page_t::FLUSH_FREED:
           break;
+        case buf_page_t::FLUSH_WRITTEN:
+          ++n_flush;
+          if (!--max_n_flush)
+          {
+            mysql_mutex_lock(&buf_pool.mutex);
+            mysql_mutex_lock(&buf_pool.flush_list_mutex);
+            may_have_skipped= true;
+            goto done;
+          }
+          mysql_mutex_lock(&buf_pool.mutex);
         }
-        mysql_mutex_lock(&buf_pool.mutex);
       }
 
       mysql_mutex_lock(&buf_pool.flush_list_mutex);
@@ -1631,7 +1630,7 @@ bool buf_flush_list_space(fil_space_t *space, ulint *n_flushed)
   buf_flush_list_space(). We should always return true from
   buf_flush_list_space() if that should be the case; in
   buf_do_flush_list_batch() we will simply perform less work. */
-
+done:
   buf_pool.flush_hp.set(nullptr);
   mysql_mutex_unlock(&buf_pool.flush_list_mutex);
 

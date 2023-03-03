@@ -30,10 +30,8 @@ Created 11/5/1995 Heikki Tuuri
 #include "log0log.h"
 #include "buf0buf.h"
 
-/** Number of pages flushed. Protected by buf_pool.mutex. */
-extern ulint buf_flush_page_count;
 /** Number of pages flushed via LRU. Protected by buf_pool.mutex.
-Also included in buf_flush_page_count. */
+Also included in buf_pool.stat.n_pages_written. */
 extern ulint buf_lru_flush_page_count;
 /** Number of pages freed without flushing. Protected by buf_pool.mutex. */
 extern ulint buf_lru_freed_page_count;

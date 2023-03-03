@@ -782,11 +782,22 @@ public:
   it from buf_pool.flush_list */
   inline void write_complete(bool temporary);
 
+  /** Status of flush() */
+  enum flush_status
+  {
+    /** the page was submitted to be written */
+    FLUSH_WRITTEN= 0,
+    /** the flush was skipped due to a locking conflict */
+    FLUSH_SKIPPED,
+    /** the page was freed without writing it */
+    FLUSH_FREED,
+  };
+
   /** Write a flushable page to a file. buf_pool.mutex must be held.
   @param evict       whether to evict the page on write completion
   @param space       tablespace
   @return whether the page was flushed and buf_pool.mutex was released */
-  inline bool flush(bool evict, fil_space_t *space);
+  inline flush_status flush(bool evict, fil_space_t *space);
 
   /** Notify that a page in a temporary tablespace has been modified. */
   void set_temp_modified()
