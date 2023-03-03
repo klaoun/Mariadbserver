@@ -1542,9 +1542,9 @@ public:
   ulint n_flush_LRU_;
   /** broadcast when n_flush_LRU reaches 0; protected by mutex */
   pthread_cond_t done_flush_LRU;
-  /** Number of pending flush_list flush; protected by mutex */
-  ulint n_flush_list_;
-  /** broadcast when n_flush_list reaches 0; protected by mutex */
+  /** whether a flush_list batch is active; protected by flush_list_mutex */
+  bool flush_list_active;
+  /** broadcast when a batch completes; protected by flush_list_mutex */
   pthread_cond_t done_flush_list;
 
 	/** @name General fields */
@@ -1719,7 +1719,8 @@ public:
   alignas(CPU_LEVEL1_DCACHE_LINESIZE) mysql_mutex_t flush_list_mutex;
   /** "hazard pointer" for flush_list scans; protected by flush_list_mutex */
   FlushHp flush_hp;
-  /** modified blocks (a subset of LRU) */
+  /** possibly modified persistent pages (a subset of LRU);
+  buf_dblwr.pending_writes() is approximately COUNT(is_write_fixed()) */
   UT_LIST_BASE_NODE_T(buf_page_t) flush_list;
 private:
   /** whether the page cleaner needs wakeup from indefinite sleep */
@@ -1752,9 +1753,6 @@ public:
     mysql_mutex_assert_owner(&flush_list_mutex);
     last_activity_count= activity_count;
   }
-
-  // n_flush_LRU_ + n_flush_list_
-  // is approximately COUNT(is_write_fixed()) in flush_list
 
 	unsigned	freed_page_clock;/*!< a sequence number used
 					to count the number of buffer
@@ -1844,14 +1842,12 @@ public:
     if (n_pend_reads)
       return true;
     mysql_mutex_lock(&mutex);
-    const bool any_pending{n_flush_LRU_ || n_flush_list_};
+    buf_dblwr.lock();
+    const bool any_pending= n_flush_LRU_ || flush_list_active ||
+      buf_dblwr.pending_writes();
+    buf_dblwr.unlock();
     mysql_mutex_unlock(&mutex);
     return any_pending;
-  }
-  /** @return total amount of pending I/O */
-  TPOOL_SUPPRESS_TSAN ulint io_pending() const
-  {
-    return n_pend_reads + n_flush_LRU_ + n_flush_list_;
   }
 
 private:
