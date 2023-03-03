@@ -1819,11 +1819,11 @@ static void buf_flush_wait(lsn_t lsn)
       buf_flush_sync_lsn= lsn;
       buf_pool.page_cleaner_set_idle(false);
       pthread_cond_signal(&buf_pool.do_flush_list);
+      my_cond_wait(&buf_pool.done_flush_list,
+                   &buf_pool.flush_list_mutex.m_mutex);
+      if (buf_pool.get_oldest_modification(lsn) >= lsn)
+        break;
     }
-    my_cond_wait(&buf_pool.done_flush_list,
-                 &buf_pool.flush_list_mutex.m_mutex);
-    if (buf_pool.get_oldest_modification(lsn) >= lsn)
-      break;
     mysql_mutex_unlock(&buf_pool.flush_list_mutex);
     buf_dblwr.wait_for_page_writes();
     mysql_mutex_lock(&buf_pool.flush_list_mutex);
